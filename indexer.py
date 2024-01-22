@@ -12,20 +12,36 @@ import argparse
 import datetime
 import os
 import sys
+import typing
 from pathlib import Path
 from urllib.parse import quote
-
 DEFAULT_OUTPUT_FILE = 'index.html'
 
 
-def process_dir(top_dir, opts):
+
+def common_path(path1: Path, path2: Path) -> typing.Optional[Path]:
+    while path1 is not None:
+        if path2.is_relative_to(path1):
+            return path1
+        path1 = path1.parent if path1 != path1.parent else None
+    return None
+
+def process_dir(top_dir, opts, skip_toplevel_parent_link=True):
     glob_patt = opts.filter or '*'
+    glob_exclude = opts.exclude or ''
 
     path_top_dir: Path
     path_top_dir = Path(top_dir)
     index_file = None
 
-    index_path = Path(path_top_dir, opts.output_file)
+    target_dir = opts.target_dir or path_top_dir
+
+    if target_dir:
+        path_target_dir = Path(target_dir)
+        path_target_dir.mkdir(parents=True,exist_ok=True)
+        index_path = Path(path_target_dir, opts.output_file)
+    else:
+        index_path = Path(path_top_dir, opts.output_file)
 
     if opts.verbose:
         print(f'Traversing dir {path_top_dir.absolute()}')
@@ -259,6 +275,9 @@ def process_dir(top_dir, opts):
                          </tr>
                          </thead>
                          <tbody>
+                 """)
+
+    parent_link_html = """
                          <tr class="clickable">
                              <td></td>
                              <td><a href=".."><svg width="1.5em" height="1em" version="1.1" viewBox="0 0 24 24"><use xlink:href="#go-up"></use></svg>
@@ -267,20 +286,29 @@ def process_dir(top_dir, opts):
                              <td class="hideable">&mdash;</td>
                              <td class="hideable"></td>
                          </tr>
-                 """)
+    """
+    if top_dir != opts.top_dir:
+        # write parent-link for every subfolder
+        index_file.write(parent_link_html)
+    elif not opts.skip_toplevel_parent_link:
+        # write parent-link in top-directory only if not skipped
+        index_file.write(parent_link_html)
 
     # sort dirs first
     sorted_entries = sorted(path_top_dir.glob(glob_patt), key=lambda p: (p.is_file(), p.name))
 
+    if glob_exclude:
+        sorted_entries = [p for p in sorted_entries if not p.match(glob_exclude)]
+
     entry: Path
-    for entry in sorted_entries:
+    for nr, entry in enumerate(sorted_entries):
 
         # don't include index.html in the file listing
         if entry.name.lower() == opts.output_file.lower():
             continue
 
         if entry.is_dir() and opts.recursive:
-            process_dir(entry, opts)
+            process_dir(entry, opts, skip_toplevel_parent_link=False)
 
         # From Python 3.6, os.access() accepts path-like objects
         if (not entry.is_symlink()) and not os.access(str(entry), os.W_OK):
@@ -308,7 +336,11 @@ def process_dir(top_dir, opts):
             print('ERROR accessing file name:', e, entry)
             continue
 
-        entry_path = str(entry.name)
+        if target_dir:
+            common_path = Path(os.path.commonpath([path_top_dir, path_target_dir]))
+            entry_path = str(Path("../" * len(path_target_dir.relative_to(common_path).parts)) / entry.relative_to(common_path))
+        else:
+            entry_path = str(entry.name)
 
         if entry.is_dir() and not entry.is_symlink():
             entry_type = 'folder'
@@ -397,6 +429,20 @@ Email josh dot brunty at marshall dot edu for additional help. ''')
                         help='only include files matching glob',
                         required=False)
 
+    parser.add_argument('--exclude', '-e',
+                        help='exclude files matching glob',
+                        required=False)
+
+    parser.add_argument('--skip-toplevel-parent-link', '-s',
+                        action='store_true',
+                        help='Do not add a link to the parent-folder in the toplevel-directory',
+                        required=False)
+
+    parser.add_argument('--target-dir', '-t',
+                        default='',
+                        help='Create the index-html in a different directory',
+                        required=False)
+
     parser.add_argument('--output-file', '-o',
                         metavar='filename',
                         default=DEFAULT_OUTPUT_FILE,
@@ -414,4 +460,4 @@ Email josh dot brunty at marshall dot edu for additional help. ''')
                         required=False)
 
     config = parser.parse_args(sys.argv[1:])
-    process_dir(config.top_dir, config)
+    process_dir(config.top_dir, config, config.skip_toplevel_parent_link)
